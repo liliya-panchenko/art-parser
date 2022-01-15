@@ -63,6 +63,9 @@ function parsePage(html, id) {
 
     createRecord(data['/api/entity/OBJECT/' + id], id).then(res => {
         console.log('Record created.');
+    }, err => {
+        console.log('Not created');
+        updateLog(id);
     });
 }
 
