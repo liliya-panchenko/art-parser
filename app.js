@@ -1,12 +1,12 @@
-const curl = require('curl');
-const jsdom = require('jsdom');
 const fs = require('fs');
-const axios = require('axios');
 
-const {JSDOM} = jsdom;
-const domain = 'https://collection.artsacademymuseum.org';
-const catalogueUrl = domain + '/api/search-entities/OBJECT';
-const pageUrl = domain + '/entity/OBJECT/';
+const axios = require('axios');
+const cyrillicToTranslit = require('cyrillic-to-translit-js');
+
+const {transform} = cyrillicToTranslit();
+
+const catalogueUrl = `/search-entities/OBJECT`
+const pageUrl = `/entity/OBJECT';`
 const file = 'out.csv';
 const log = 'log.txt';
 const imagesDirectory = './images/';
@@ -15,54 +15,45 @@ const separator = ';';
 
 let start = process.argv[0];
 
+const ArtsAcademyClient = axios.create({
+    baseURL: 'https://collection.artsacademymuseum.org/api',
+});
+
 fs.readFile(file, function(err, data) {
     if (data.length === 0) {
         createHeaders();
     }
-
     fetchCatalogue();
-})
+});
 
 function fetchCatalogue() {
-    curl.postJSON(catalogueUrl, {
+    ArtsAcademyClient.post(catalogueUrl, {
         count: 20,
         filters: {
             fund: ['14']
         },
         query: null,
         sort: '90',
-        start: start,
-    }, null, (err, res, data) => {
-        if (res.statusCode === 200) {
-            let json = JSON.parse(data);
-            let ids = json.data.map(item => item.id);
-            ids.forEach(id => { fetchPage(id); });
-        } else {
-            console.log('Error while fetching catalogue url');
+        start,
+    }).then(({ statusCode, data }) => {
+        if (statusCode === 200) {
+            data.data.map(item => item.id).forEach(id => {
+                fetchPage(id);
+            });
         }
     });
 }
 
 function fetchPage(id) {
-    curl.get(pageUrl + id, null, (err, res, body) => {
-        if (res.statusCode === 200) {
-            parsePage(body, id);
+    ArtsAcademyClient.get(`${pageUrl}/${id}`).then(({ statusCode, data }) => {
+        if (statusCode === 200) {
+            createRecord(data, id).then((_) => {
+                console.log('Record created.');
+            });
         } else {
             console.log('Error while fetching page url: ' + id);
             updateLog(id);
         }
-    });
-}
-
-function parsePage(html, id) {
-    let dom = new JSDOM(html);
-
-    let jsonString = dom.window.document.getElementById('my-app-state').textContent;
-    let json = jsonString.replace(/\&q;/g, '"');
-    let data = JSON.parse(json);
-
-    createRecord(data['/api/entity/OBJECT/' + id], id).then(res => {
-        console.log('Record created.');
     });
 }
 
@@ -99,11 +90,11 @@ async function createRecord(data, id) {
         });
     }
 
-    let dir = findDirectory(trans(result.author || 'unsorted', false));
+    let dir = findDirectory(transform(result.author || 'unsorted'));
     let filenameArr = data.image.split('/');
     let filename = dir + '/' + filenameArr[filenameArr.length-1];
 
-    await downloadImage(domain + data.image + '?w=3000&h=3000', filename).then(res => {
+    await downloadImage(data.image + '?w=3000&h=3000', filename).then(res => {
         let record = [
             result.author,
             result.title,
@@ -136,18 +127,13 @@ function findDirectory(name) {
 }
 
 async function downloadImage(url, image_path) {
-    axios({
-        url,
-        responseType: 'stream',
-    }).then(
-        response =>
-            new Promise((resolve, reject) => {
-                response.data
-                    .pipe(fs.createWriteStream(image_path))
-                    .on('finish', () => resolve())
-                    .on('error', e => reject(e));
-            }),
-    );
+    return ArtsAcademyClient.get(url, {responseType: 'stream'})
+        .then((response) => new Promise((resolve, reject) => {
+            response.data
+                .pipe(fs.createWriteStream(image_path))
+                .on('finish', resolve)
+                .on('error', reject);
+        }));
 }
 
 function createHeaders() {
@@ -168,20 +154,3 @@ function updateLog(id) {
         console.log('Log updated');
     });
 }
-
-trans = (
-    function() {
-        let
-            rus = "щ   ш  ч  ц  ю  я  ё  ж  ъ  ы  э  а б в г д е з и й к л м н о п р с т у ф х ь".split(/ +/g),
-            eng = "shh sh ch cz yu ya yo zh `` y' e` a b v g d e z i j k l m n o p r s t u f x `".split(/ +/g)
-        ;
-        return function(text, engToRus) {
-            let x;
-            for(x = 0; x < rus.length; x++) {
-                text = text.split(engToRus ? eng[x] : rus[x]).join(engToRus ? rus[x] : eng[x]);
-                text = text.split(engToRus ? eng[x].toUpperCase() : rus[x].toUpperCase()).join(engToRus ? rus[x].toUpperCase() : eng[x].toUpperCase());
-            }
-            return text;
-        }
-    }
-)();
