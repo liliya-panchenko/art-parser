@@ -3,6 +3,7 @@ const jsdom = require('jsdom');
 const fs = require('fs');
 const axios = require('axios');
 
+
 const {JSDOM} = jsdom;
 const domain = 'https://collection.artsacademymuseum.org';
 const catalogueUrl = domain + '/api/search-entities/OBJECT';
@@ -25,7 +26,7 @@ fs.readFile(file, function(err, data) {
 
 function fetchCatalogue() {
     curl.postJSON(catalogueUrl, {
-        count: 1,
+        count: 5,
         filters: {
             fund: ['14']
         },
@@ -104,13 +105,12 @@ function createRecord(data, id) {
         });
     }
 
-    let dir = findDirectory('test');
-    console.log(dir);
+    let dir = findDirectory(trans(result.author || 'unsorted', false));
 
-    //downloadImage(domain + data.image + '?w=3000&h=3000', 'test.jpg', id);
+    downloadImage(domain + data.image + '?w=3000&h=3000', 'test.jpg', id);
 
     return [
-        result.author, result.title, result.material, result.technique, result.dimensions, result.type
+        result.author, result.title, result.material, result.technique, result.dimensions, result.type, dir
     ].join(separator) + '\n';
 }
 
@@ -123,7 +123,6 @@ function findDirectory(name) {
 
     return dir;
 }
-
 
 function downloadImage(url, image_path, id) {
     axios({
@@ -159,3 +158,21 @@ function updateLog(id) {
         console.log('Log updated');
     });
 }
+
+
+trans = (
+    function() {
+        let
+            rus = "щ   ш  ч  ц  ю  я  ё  ж  ъ  ы  э  а б в г д е з и й к л м н о п р с т у ф х ь".split(/ +/g),
+            eng = "shh sh ch cz yu ya yo zh `` y' e` a b v g d e z i j k l m n o p r s t u f x `".split(/ +/g)
+        ;
+        return function(text, engToRus) {
+            let x;
+            for(x = 0; x < rus.length; x++) {
+                text = text.split(engToRus ? eng[x] : rus[x]).join(engToRus ? rus[x] : eng[x]);
+                text = text.split(engToRus ? eng[x].toUpperCase() : rus[x].toUpperCase()).join(engToRus ? rus[x].toUpperCase() : eng[x].toUpperCase());
+            }
+            return text;
+        }
+    }
+)();
