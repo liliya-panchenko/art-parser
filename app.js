@@ -3,7 +3,6 @@ const jsdom = require('jsdom');
 const fs = require('fs');
 const axios = require('axios');
 
-
 const {JSDOM} = jsdom;
 const domain = 'https://collection.artsacademymuseum.org';
 const catalogueUrl = domain + '/api/search-entities/OBJECT';
@@ -26,7 +25,7 @@ fs.readFile(file, function(err, data) {
 
 function fetchCatalogue() {
     curl.postJSON(catalogueUrl, {
-        count: 5,
+        count: 20,
         filters: {
             fund: ['14']
         },
@@ -62,17 +61,12 @@ function parsePage(html, id) {
     let json = jsonString.replace(/\&q;/g, '"');
     let data = JSON.parse(json);
 
-    let record = createRecord(data['/api/entity/OBJECT/' + id], id);
-
-    fs.appendFile(file, record, function (err) {
-        if (err) throw err;
-        console.log('Record created:');
-        console.log(record);
+    createRecord(data['/api/entity/OBJECT/' + id], id).then(res => {
+        console.log('Record created.');
     });
-
 }
 
-function createRecord(data, id) {
+async function createRecord(data, id) {
     if (!data || !data.image || !data.data) {
         console.log('Error while data parsing: ' + id);
         updateLog(id);
@@ -106,12 +100,29 @@ function createRecord(data, id) {
     }
 
     let dir = findDirectory(trans(result.author || 'unsorted', false));
+    let filenameArr = data.image.split('/');
+    let filename = dir + '/' + filenameArr[filenameArr.length-1];
 
-    downloadImage(domain + data.image + '?w=3000&h=3000', 'test.jpg', id);
-
-    return [
-        result.author, result.title, result.material, result.technique, result.dimensions, result.type, dir
+    await downloadImage(domain + data.image + '?w=3000&h=3000', filename).then(res => {
+        let record = [
+            result.author,
+            result.title,
+            result.material,
+            result.technique,
+            result.dimensions,
+            result.type,
+            dir,
+            filenameArr[filenameArr.length-1]
     ].join(separator) + '\n';
+
+        fs.appendFile(file, record, function (err) {
+            if (err) throw err;
+            console.log(record);
+        });
+
+    }, (err) => {
+        updateLog(id);
+    })
 }
 
 function findDirectory(name) {
@@ -124,7 +135,7 @@ function findDirectory(name) {
     return dir;
 }
 
-function downloadImage(url, image_path, id) {
+async function downloadImage(url, image_path) {
     axios({
         url,
         responseType: 'stream',
@@ -138,7 +149,6 @@ function downloadImage(url, image_path, id) {
             }),
     );
 }
-
 
 function createHeaders() {
     let headers = [
@@ -158,7 +168,6 @@ function updateLog(id) {
         console.log('Log updated');
     });
 }
-
 
 trans = (
     function() {
