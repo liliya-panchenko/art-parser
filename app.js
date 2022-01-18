@@ -1,119 +1,136 @@
 const fs = require('fs');
-
+const papa = require('papaparse');
 const axios = require('axios');
 const cyrillicToTranslit = require('cyrillic-to-translit-js');
 
 const {transform} = cyrillicToTranslit();
 
-const catalogueUrl = `/search-entities/OBJECT`
-const pageUrl = `/entity/OBJECT';`
+const catalogueUrl = `/api/search-entities/OBJECT`;
+const pageUrl = `/api/entity/OBJECT`;
 const file = 'out.csv';
+const fileJson = 'out.json';
 const log = 'log.txt';
 const imagesDirectory = './images/';
 
-const separator = ';';
-
-let start = process.argv[0];
+let param = process.argv[2];
 
 const ArtsAcademyClient = axios.create({
-    baseURL: 'https://collection.artsacademymuseum.org/api',
+    baseURL: 'https://collection.artsacademymuseum.org',
 });
 
-fs.readFile(file, function(err, data) {
-    if (data.length === 0) {
-        createHeaders();
+let content = fs.readFileSync(file, 'utf8');
+let json = [];
+
+papa.parse(content, {
+    header: true,
+    delimiter: ';',
+    complete: function(results) {
+        json = results.data;
     }
-    fetchCatalogue();
-});
+})
 
-function fetchCatalogue() {
-    ArtsAcademyClient.post(catalogueUrl, {
-        count: 20,
+if (param === 'from-log') {
+    fetchFromLog().then(r => {});
+} else if (param === 'to-json') {
+    fs.writeFileSync(fileJson, JSON.stringify(json));
+} else {
+    fetchCatalogue().then(status => {
+        console.log('Catalogue response status: ' + status);
+    });
+}
+
+async function fetchFromLog() {
+    let logContent = fs.readFileSync(log, 'utf8');
+    let ids = logContent.split(/\r?\n/);
+
+    for (let i = 0; i < ids.length; i++) {
+        if (ids[i].length) {
+            fetchPage(ids[i]).then(message => {
+                console.log(message);
+            });
+            await timeout(1000);
+        }
+    }
+}
+
+async function fetchCatalogue() {
+    let response = await ArtsAcademyClient.post(catalogueUrl, {
+        count: 500,
         filters: {
             fund: ['14']
         },
         query: null,
         sort: '90',
-        start,
-    }).then(({ statusCode, data }) => {
-        if (statusCode === 200) {
-            data.data.map(item => item.id).forEach(id => {
-                fetchPage(id);
-            });
-        }
+        start: 3000,
     });
+
+    if (response.status === 200) {
+        let listIds = response.data.data.map(item => item.id);
+
+        for (let i = 0; i < listIds.length; i++) {
+            fetchPage(listIds[i]).then(message => {
+                console.log(message);
+            });
+            await timeout(1000);
+        }
+    }
+
+    return response.status;
 }
 
-function fetchPage(id) {
-    ArtsAcademyClient.get(`${pageUrl}/${id}`).then(({ statusCode, data }) => {
-        if (statusCode === 200) {
-            createRecord(data, id).then((_) => {
-                console.log('Record created.');
-            });
-        } else {
-            console.log('Error while fetching page url: ' + id);
-            updateLog(id);
-        }
-    });
+async function timeout(timeoutValue) {
+    return new Promise((resolve) => setTimeout(resolve, timeoutValue));
+}
+
+async function fetchPage(id) {
+    let response = await ArtsAcademyClient.get(`${pageUrl}/${id}`);
+
+    if (response.status === 200) {
+        await createRecord(response.data, id);
+
+        fs.writeFileSync(file, papa.unparse(json, {
+            header: true,
+            delimiter: ';',
+        }));
+
+        return 'Record created: ' + id;
+    }
+
+    return 'Error while fetching page: ' + id;
 }
 
 async function createRecord(data, id) {
-    if (!data || !data.image || !data.data) {
+    if (!data || data.image === null || !data.data.length) {
         console.log('Error while data parsing: ' + id);
         updateLog(id);
+        return;
     }
 
-    let result = {};
-    let info = data.data;
+    let result = getInfo(data.data);
+    let authorDir = transform(result.author || 'unsorted');
+    let dir = findDirectory(authorDir);
+    let originalPathArr = data.image.split('/');
+    let originalFilenameArr = originalPathArr[originalPathArr.length-1].split('.');
+    let filename = [id, originalFilenameArr[1]].join('.');
 
-    if (Array.isArray(info)) {
-        info.forEach(item => {
-            if (item.attribute === 'author' && item.data.length) {
-                result.author = (item.data[0].title || '').replace(/\"/g, '\\"');
-            }
+    try {
+        await downloadImage(data.image + '?w=3000&h=3000', dir + '/' + filename);
 
-            if (item.attribute === 'object_title' && item.value.length) {
-                result.title = (item.value[0] || '').replace(/\"/g, '\\"');
-            }
+        json.push({
+            Author: result.author,
+            Title: result.title,
+            Material: result.material,
+            Technique: result.technique,
+            Dimensions: result.dimensions,
+            Type: result.type,
+            Folder: authorDir,
+            Image: filename
+        })
 
-            if (item.attribute === 'material_techniq' && item.value.length) {
-                [result.material = '', result.technique = ''] = (item.value[0] || '').split(separator);
-            }
-
-            if (item.attribute === 'dimensions' && item.value.length) {
-                result.dimensions = item.value[0] || '';
-            }
-
-            if (item.attribute === 'typeiss' && item.data.length) {
-                result.type = item.data[0].title || '';
-            }
-        });
-    }
-
-    let dir = findDirectory(transform(result.author || 'unsorted'));
-    let filenameArr = data.image.split('/');
-    let filename = dir + '/' + filenameArr[filenameArr.length-1];
-
-    await downloadImage(data.image + '?w=3000&h=3000', filename).then(res => {
-        let record = [
-            result.author,
-            result.title,
-            result.material,
-            result.technique,
-            result.dimensions,
-            result.type,
-            dir,
-            filenameArr[filenameArr.length-1]
-    ].join(separator) + '\n';
-
-        fs.appendFile(file, record, function (err) {
-            if (err) throw err;
-            console.log(record);
-        });
-
-    }, (err) => {
+    } catch(err) {
+        console.log('Error while downloading image: ' + filename)
         updateLog(id);
-    })
+    }
 }
 
 function findDirectory(name) {
@@ -136,21 +153,36 @@ async function downloadImage(url, image_path) {
         }));
 }
 
-function createHeaders() {
-    let headers = [
-        'Author', 'Title', 'Material', 'Technique', 'Dimensions', 'Type', 'Folder', 'Image'
-    ].join(separator) + '\n';
-
-    fs.appendFile('out.csv', headers, function (err) {
-        if (err) throw err;
-        console.log('Headers created:');
-        console.log(headers);
-    });
+function updateLog(id) {
+    fs.appendFileSync(log, id + '\n');
 }
 
-function updateLog(id) {
-    fs.appendFile(log, id + '\n', function (err) {
-        if (err) throw err;
-        console.log('Log updated');
-    });
+function getInfo(info) {
+    let result = {};
+
+    if (Array.isArray(info)) {
+        info.forEach(item => {
+            if (item.attribute === 'author' && item.data.length) {
+                result.author = item.data[0].title || '';
+            }
+
+            if (item.attribute === 'object_title' && item.value.length) {
+                result.title = item.value[0] || '';
+            }
+
+            if (item.attribute === 'material_techniq' && item.value.length) {
+                [result.material = '', result.technique = ''] = (item.value[0] || '').split(';');
+            }
+
+            if (item.attribute === 'dimensions' && item.value.length) {
+                result.dimensions = item.value[0] || '';
+            }
+
+            if (item.attribute === 'typeiss' && item.data.length) {
+                result.type = item.data[0].title || '';
+            }
+        });
+    }
+
+    return result;
 }
